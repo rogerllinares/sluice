@@ -1,0 +1,39 @@
+# docker-compose for Sluice.
+#
+# Backend = PostgreSQL + `FOR UPDATE SKIP LOCKED` (see ADR-001). Postgres is the
+# only required service for the default durable path — one container to demo.
+# A Redis service would be added here ONLY if the optional Redis Streams adapter
+# ships (it then needs `appendonly yes` + an appendfsync policy to be durable).
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # TODO(F2): real DSN / config keys once the Postgres backend lands.
+      SLUICE_DATABASE_URL: postgres://sluice:sluice@postgres:5432/sluice?sslmode=disable
+    # TODO(F4/F7): expose the HTTP/metrics port (ports: ["8080:8080"]).
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sluice
+      POSTGRES_PASSWORD: sluice
+      POSTGRES_DB: sluice
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sluice"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
