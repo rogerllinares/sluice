@@ -25,11 +25,18 @@ import (
 
 // Job is the unit of work moving through the queue.
 //
-// Only the fields the F1 slice pins are present; Attempts, IdempotencyKey,
-// timestamps, and status are added by later phases when their tests demand them.
+// ID and Payload were pinned by F1. Attempts was added by F2: the durable
+// backend increments it on every reservation, so a redelivered job (crashed
+// worker, visibility timeout elapsed) carries its delivery count. IdempotencyKey
+// and timestamps are added by later phases when their tests demand them.
 type Job struct {
 	ID      string
 	Payload []byte
+
+	// Attempts is the number of times this job has been reserved for
+	// processing. 0 before the first Dequeue; incremented by the durable
+	// backend on each reservation. The in-memory backend leaves it at 0.
+	Attempts int
 }
 
 // ErrQueueFull is returned by the non-blocking enqueue path (Memory.Submit) when
