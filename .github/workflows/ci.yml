@@ -29,7 +29,10 @@ jobs:
       - name: go test
         run: go test -race ./...
 
+      # golangci-lint must be built with Go >= the go.mod directive (1.25);
+      # the last v1 release (1.64.8) is built with go1.24 and refuses, so we
+      # pin v2. Action v8 is the first that drives golangci-lint v2.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.12.2
