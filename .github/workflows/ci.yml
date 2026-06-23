@@ -17,16 +17,22 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.25"
           cache: true
 
       - name: go vet
         run: go vet ./...
 
+      # Integration tests spin up Postgres via testcontainers-go, which uses the
+      # Docker daemon preinstalled on ubuntu-latest runners — no service block
+      # needed. -race runs here (no local cgo on the dev machine).
       - name: go test
         run: go test -race ./...
 
+      # golangci-lint must be built with Go >= the go.mod directive (1.25);
+      # the last v1 release (1.64.8) is built with go1.24 and refuses, so we
+      # pin v2. Action v8 is the first that drives golangci-lint v2.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.12.2
