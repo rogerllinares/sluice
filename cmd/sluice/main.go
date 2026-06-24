@@ -8,12 +8,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/rogerllinares/sluice/internal/api"
 	"github.com/rogerllinares/sluice/internal/queue"
@@ -25,6 +27,11 @@ const (
 	queueDepth = 100
 	// httpAddr is the producer edge the enqueue handler is served on.
 	httpAddr = ":8080"
+	// shutdownCeiling is the hard ceiling on graceful shutdown: in-flight work
+	// gets at most this long to drain before the process forces an abort and
+	// exits. It bounds how long a SIGTERM can take (e.g. under an orchestrator's
+	// own termination grace period).
+	shutdownCeiling = 20 * time.Second
 )
 
 func main() {
@@ -67,14 +74,34 @@ func main() {
 
 	// Block until a signal cancels ctx.
 	<-ctx.Done()
-	slog.Info("shutdown signal received")
+	slog.Info("shutdown signal received, draining", "ceiling", shutdownCeiling)
 
-	// Minimal shutdown: stop accepting HTTP connections. Full graceful drain of
-	// in-flight jobs within a hard ceiling is F6 (pool.Shutdown + API drain).
-	if err := httpServer.Close(); err != nil {
-		slog.Error("http server close", "err", err)
+	// Stop listening for the signal so a second Ctrl-C aborts the process the
+	// hard way (the OS default) instead of being swallowed mid-drain.
+	stop()
+
+	// Graceful shutdown within a single hard ceiling shared by both subsystems.
+	// Order: stop the producer edge first (HTTP), so no new jobs arrive while
+	// the pool drains the ones already queued; then drain the pool; then wait
+	// for any in-flight backoff retries to land so none are stranded.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownCeiling)
+	defer cancel()
+
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		slog.Error("http server graceful shutdown", "err", err)
 	}
 
-	// TODO(F6): graceful shutdown — Shutdown(ctx) on the pool + API, wait for
-	//           drain or the deadline, then exit with the right status code.
+	if err := pool.Shutdown(shutdownCtx); err != nil {
+		// Ceiling exceeded: a job hung past the deadline and was force-aborted.
+		// The process still exits (a hung job must not pin it) but non-zero so
+		// an orchestrator sees the unclean drain.
+		slog.Error("worker pool drain exceeded ceiling", "err", err)
+		if errors.Is(err, worker.ErrShutdownTimeout) {
+			os.Exit(1)
+		}
+	}
+
+	// Drain in-flight backoff retries so a redelivery timer is not stranded.
+	q.WaitRetries()
+	slog.Info("shutdown complete")
 }
