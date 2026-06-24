@@ -37,3 +37,4 @@ go.work.sum
 # Internal tooling — kept local in the vault as SoT, not for the public repo
 /CLAUDE.md
 /.planning/
+/scripts/
