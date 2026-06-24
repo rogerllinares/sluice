@@ -57,3 +57,18 @@ func (m *Memory) Submit(job Job) error {
 		return ErrQueueFull
 	}
 }
+
+// SubmitWait is the blocking enqueue path: the backpressure counterpart to
+// Submit's shedding. It blocks until a buffer slot frees and the job is
+// enqueued, or until ctx is cancelled/times out (returning ctx.Err()). Callers
+// that prefer to wait under load use this; callers that prefer to shed use
+// Submit. (It mirrors Enqueue; the distinct name marks the producer-facing
+// "wait, don't shed" intent at the call site.)
+func (m *Memory) SubmitWait(ctx context.Context, job Job) error {
+	select {
+	case m.jobs <- job:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}

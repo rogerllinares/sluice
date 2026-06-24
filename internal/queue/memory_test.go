@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/rogerllinares/sluice/internal/queue"
 )
@@ -106,6 +107,68 @@ func TestMemorySubmitShedsWhenFull(t *testing.T) {
 	err := q.Submit(queue.Job{ID: "overflow"})
 	if !errors.Is(err, queue.ErrQueueFull) {
 		t.Fatalf("Submit() on full queue = %v, want ErrQueueFull", err)
+	}
+}
+
+// TestMemorySubmitWaitBlocksUntilSlotFrees is the backpressure counterpart to
+// shedding: on a full queue SubmitWait does NOT return ErrQueueFull, it blocks
+// until a worker dequeues and frees a slot, then succeeds. We fill the buffer,
+// launch a SubmitWait in a goroutine, assert it is still blocked, then Dequeue
+// once and assert it unblocks with nil.
+func TestMemorySubmitWaitBlocksUntilSlotFrees(t *testing.T) {
+	ctx := context.Background()
+	const depth = 1
+	q := queue.NewMemory(depth)
+
+	// Fill the buffer to its bound.
+	if err := q.Submit(queue.Job{ID: "fill"}); err != nil {
+		t.Fatalf("Submit to fill buffer returned error: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- q.SubmitWait(ctx, queue.Job{ID: "waiter"})
+	}()
+
+	// While the buffer is full SubmitWait must block, not return.
+	select {
+	case err := <-done:
+		t.Fatalf("SubmitWait returned %v on a full queue, want it to block", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Freeing a slot must unblock SubmitWait with a successful enqueue.
+	if _, err := q.Dequeue(ctx); err != nil {
+		t.Fatalf("Dequeue() returned error: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("SubmitWait returned %v after a slot freed, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SubmitWait did not unblock within 2s after a slot freed")
+	}
+}
+
+// TestMemorySubmitWaitRespectsContext pins that a blocked SubmitWait honours
+// ctx: when the context is cancelled (here via timeout) before a slot frees, it
+// returns the context error instead of blocking forever.
+func TestMemorySubmitWaitRespectsContext(t *testing.T) {
+	const depth = 1
+	q := queue.NewMemory(depth)
+
+	// Fill the buffer so SubmitWait has to wait.
+	if err := q.Submit(queue.Job{ID: "fill"}); err != nil {
+		t.Fatalf("Submit to fill buffer returned error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := q.SubmitWait(ctx, queue.Job{ID: "waiter"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SubmitWait on a full queue with an expiring ctx = %v, want context.DeadlineExceeded", err)
 	}
 }
 
