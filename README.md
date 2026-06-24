@@ -63,16 +63,20 @@ survive — not just assert them.
 
 ## How to run
 
-> **Status:** F1 landed — the in-memory bounded-channel queue and the worker
-> pool are implemented and tested (`go test ./...` is green). The Postgres-durable
-> backend (F2), HTTP edge (F4), retries/DLQ (F5), and observability (F7) are next;
-> the commands below describe the full intended surface.
+> **Status:** F0–F6 landed and merged (CI green). Implemented and tested: the
+> in-memory and **Postgres-durable** (`FOR UPDATE SKIP LOCKED`) backends, the HTTP
+> enqueue edge (backpressure `SubmitWait` + load-shedding → `429` + `Retry-After`),
+> at-least-once delivery with a visibility-timeout reaper, idempotency keys,
+> max-retries with exponential backoff + jitter, a dead-letter queue, and graceful
+> shutdown (SIGINT/SIGTERM drain within a hard ceiling, no goroutine leaks).
+> Next: observability (Prometheus `/metrics` + `slog`, F7) and a load test that
+> visibly triggers shedding (F8). `go test ./...` is green.
 
 ```bash
-go test ./...               # full TDD suite (green today)
-docker compose up -d        # Postgres (+ Redis if the adapter ships) — needed from F2
-go run ./cmd/sluice         # start queue + worker pool + /metrics (from F4)
-# durability demo (TODO: script):
+docker compose up -d        # Postgres (+ Redis if the adapter ships)
+go test ./...               # full TDD suite (green)
+go run ./cmd/sluice         # start the queue + worker pool + HTTP enqueue edge
+# durability demo (manual today; scripted load generator lands in F8):
 #   docker kill <worker>          -> redelivery after the visibility timeout
 #   docker compose down && up     -> queue state persisted
 ```
