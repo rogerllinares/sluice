@@ -3,6 +3,7 @@ package worker_test
 import (
 	"context"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -87,13 +88,18 @@ func TestPoolDefaultsToNumCPU(t *testing.T) {
 }
 
 // TestPoolContainsPanickingJob proves a panicking job cannot shrink the pool:
-// every normal job is still processed, and the poison job is retried once
-// (original + 1 retry = maxAttempts) then dropped instead of looping forever.
+// every normal job is still processed, and the poison job is delivered exactly
+// MaxAttempts times (here 2 = original + 1 retry) then dead-lettered by the
+// backend instead of looping forever. F5 moved the retry cap into the backend
+// (single authoritative Attempts count); the pool just Nacks on failure.
 func TestPoolContainsPanickingJob(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	const normal = 5
-	q := queue.NewMemory(normal + 1)
+	q := queue.NewMemory(normal+1,
+		queue.WithMemoryMaxAttempts(2),
+		queue.WithMemoryBackoff(5*time.Millisecond, 20*time.Millisecond),
+	)
 
 	var processed, poisonRuns int64
 	done := make(chan struct{})
@@ -155,8 +161,11 @@ func TestPoolNoGoroutineLeak(t *testing.T) {
 	q := queue.NewMemory(4)
 
 	var processed int64
+	firstDone := make(chan struct{})
+	var once sync.Once
 	handler := func(context.Context, queue.Job) error {
 		atomic.AddInt64(&processed, 1)
+		once.Do(func() { close(firstDone) })
 		return nil
 	}
 
@@ -168,6 +177,18 @@ func TestPoolNoGoroutineLeak(t *testing.T) {
 		if err := q.Enqueue(ctx, queue.Job{ID: "j"}); err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
+	}
+
+	// Wait for at least one job to actually be processed before cancelling.
+	// Cancelling immediately races the dequeue: a worker can observe ctx.Done
+	// before pulling any job, which made this test flaky under suite-wide
+	// timing pressure (the cancel-vs-dequeue race). Synchronising on real work
+	// removes the race without weakening the leak guarantee (goleak in TestMain
+	// still asserts every worker goroutine exits after cancel).
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no job processed within 2s")
 	}
 
 	cancel()

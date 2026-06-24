@@ -8,10 +8,12 @@
 // from shrinking the pool. Shutdown drains in-flight work within a hard ceiling
 // with no goroutine leaks (see ROADMAP F3/F6).
 //
-// F3 adds the WaitGroup-tracked drain, the NumCPU default, a per-job recover (a
-// panicking job is contained, not a dead worker), and a provisional retry cap
-// (see maxAttempts). Graceful Shutdown stays TODO until F6. Behaviour is built
-// test-first.
+// F3 added the WaitGroup-tracked drain, the NumCPU default, and a per-job
+// recover (a panicking job is contained, not a dead worker). F5 reconciled the
+// retry accounting: the pool no longer counts attempts. On failure it just
+// Nacks, and the backend — which owns the single authoritative Attempts count —
+// decides redelivery (with backoff) vs dead-letter. Graceful Shutdown stays
+// TODO until F6. Behaviour is built test-first.
 package worker
 
 import (
@@ -47,13 +49,6 @@ type Pool struct {
 //
 // TODO(F3/F5): finalise the handler signature against the first failing tests.
 type Handler func(ctx context.Context, job queue.Job) error
-
-// maxAttempts caps how many times a job is delivered before the pool gives up:
-// the original attempt plus one retry. This is the F3-provisional retry limit,
-// counted pool-side; F5 reconciles it into proper max-retries + backoff + DLQ
-// across both backends (the durable backend already increments Attempts on each
-// Dequeue, so the counts converge there).
-const maxAttempts = 2
 
 // New constructs a Pool over the given queue and handler. A NumWorkers of 0 (or
 // negative) defaults to runtime.NumCPU().
@@ -95,15 +90,11 @@ func (p *Pool) work(ctx context.Context) {
 			return
 		}
 		if err := p.handle(ctx, job); err != nil {
-			// Delivery failed (handler error or panic): count the attempt and
-			// retry until maxAttempts, then drop (Ack) so a poison job cannot
-			// loop forever. F5 turns the drop into a DLQ route.
-			job.Attempts++
-			if job.Attempts >= maxAttempts {
-				_ = p.q.Ack(ctx, job) // give up: drop
-			} else {
-				_ = p.q.Nack(ctx, job) // retry
-			}
+			// Delivery failed (handler error or panic). The pool does not count
+			// attempts or decide the cap — it just reports the failure. The
+			// backend reads the job's authoritative Attempts and either
+			// redelivers after a backoff or dead-letters it past MaxAttempts.
+			_ = p.q.Nack(ctx, job)
 			continue
 		}
 		_ = p.q.Ack(ctx, job)

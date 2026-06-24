@@ -28,15 +28,22 @@ import (
 // ID and Payload were pinned by F1. Attempts was added by F2: the durable
 // backend increments it on every reservation, so a redelivered job (crashed
 // worker, visibility timeout elapsed) carries its delivery count. IdempotencyKey
-// and timestamps are added by later phases when their tests demand them.
+// was added by F5 for enqueue-time dedupe.
 type Job struct {
 	ID      string
 	Payload []byte
 
 	// Attempts is the number of times this job has been reserved for
-	// processing. 0 before the first Dequeue; incremented by the durable
-	// backend on each reservation. The in-memory backend leaves it at 0.
+	// processing. 0 before the first Dequeue; incremented on each reservation.
+	// This is the SINGLE authoritative delivery counter (F5 reconciliation):
+	// the backend owns it, and Nack reads it to decide retry-vs-dead-letter.
+	// The worker pool no longer counts attempts itself.
 	Attempts int
+
+	// IdempotencyKey, when non-empty, makes Enqueue dedupe: a second Enqueue
+	// carrying the same key is a no-op, so an at-least-once producer that
+	// retries an enqueue does not create a duplicate job. Empty = never deduped.
+	IdempotencyKey string
 }
 
 // ErrQueueFull is returned by the non-blocking enqueue path (Memory.Submit) when
@@ -57,7 +64,11 @@ type Queue interface {
 	// Ack marks a reserved job as successfully processed. Called AFTER work.
 	Ack(ctx context.Context, job Job) error // TODO(F1)
 
-	// Nack returns a job for retry (with backoff) or dead-letters it once it
-	// is past max retries.
-	Nack(ctx context.Context, job Job) error // TODO(F1/F5)
+	// Nack reports that processing failed and lets the backend decide the
+	// job's fate from its authoritative Attempts count: below MaxAttempts it
+	// schedules a redelivery after an exponential-backoff-with-jitter delay;
+	// at or past MaxAttempts it dead-letters the job (no more redelivery). This
+	// is the single retry-accounting site (F5) — the worker pool only reports
+	// success (Ack) or failure (Nack); it does not count attempts.
+	Nack(ctx context.Context, job Job) error
 }
