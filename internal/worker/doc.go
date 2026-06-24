@@ -52,12 +52,14 @@ type Config struct {
 //     drain never cancels it, so a running job finishes. The force path
 //     (ceiling exceeded, or Stop) cancels it so a hung job cannot pin the pool.
 //
-// Because jobCtx is derived from dequeueCtx, cancelling dequeueCtx cascades
-// down and cancels jobCtx too (parent -> child). The reverse is not true:
-// cancelling jobCtx leaves dequeueCtx alive. So a full abort must cancel the
-// PARENT (dequeueCtx) — that both stops new pulls and kills in-flight work —
-// which is what Stop does; Shutdown's force path cancels jobCtx only because it
-// has already cancelled dequeueCtx during the graceful phase.
+// The two contexts are INDEPENDENT siblings, both derived from the parent ctx —
+// crucially jobCtx is NOT a child of dequeueCtx. If it were, cancelling
+// dequeueCtx (the graceful "stop pulling" signal) would cascade down and cancel
+// the in-flight handler too, so a hung job would unblock and Shutdown could
+// never observe the ceiling. Keeping them independent lets a graceful drain stop
+// new pulls while leaving in-flight work running. A full abort therefore cancels
+// BOTH (Stop, and the Shutdown force path); cancelling the shared parent ctx
+// (e.g. the SIGTERM context) cancels both at once.
 type Pool struct {
 	q   queue.Queue
 	h   Handler
@@ -98,8 +100,10 @@ func (p *Pool) Size() int { return p.cfg.NumWorkers }
 // in-flight work to abort). Cancelling the parent ctx — e.g. the SIGTERM context
 // from signal.NotifyContext — still aborts everything immediately.
 func (p *Pool) Start(ctx context.Context) error {
+	// Independent siblings off ctx (NOT jobCtx off dequeueCtx) so the graceful
+	// "stop pulling" cancel does not also abort in-flight handlers.
 	p.dequeueCtx, p.stopDequeue = context.WithCancel(ctx)
-	p.jobCtx, p.abort = context.WithCancel(p.dequeueCtx)
+	p.jobCtx, p.abort = context.WithCancel(ctx)
 	p.wg.Add(p.cfg.NumWorkers)
 	for i := 0; i < p.cfg.NumWorkers; i++ {
 		go p.work()
@@ -182,14 +186,14 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 }
 
 // Stop aborts the pool immediately: the abort-now counterpart to Shutdown's
-// graceful drain. It cancels dequeueCtx, which both stops idle workers pulling
-// and (via the dequeueCtx -> jobCtx derivation) cancels in-flight handlers, so a
-// worker neither finishes its current job nor blocks on the next Dequeue — it
-// exits. Callers Wait afterwards to confirm the workers exited. Stop before
-// Start is a no-op.
+// graceful drain. It cancels both contexts — stopDequeue (idle workers stop
+// pulling) and abort (in-flight handlers are cancelled) — so a worker neither
+// finishes its current job nor blocks on the next Dequeue; it exits. Callers
+// Wait afterwards to confirm the workers exited. Stop before Start is a no-op.
 func (p *Pool) Stop() {
 	if p.stopDequeue == nil {
 		return // never started
 	}
 	p.stopDequeue()
+	p.abort()
 }
