@@ -14,22 +14,28 @@ import (
 // guarantee about when a slot frees.
 const defaultRetryAfterSeconds = 1
 
-// Server is the HTTP producer edge over a queue.Queue. It owns no goroutines;
-// it just maps HTTP requests onto the queue's non-blocking Submit path so that
-// a full queue sheds (429) rather than blocking the request.
+// Server is the HTTP producer edge over a shedding-capable queue. It owns no
+// goroutines; it just maps HTTP requests onto the queue's non-blocking Submit
+// path so that a full queue sheds (429) rather than blocking the request.
 type Server struct {
-	q                 queue.Queue
+	q                 submitter
 	retryAfterSeconds int
 }
 
-// NewServer constructs a Server over the given queue.
+// NewServer constructs a Server over the given queue. The queue must support
+// non-blocking shedding (Submit); a backend that cannot shed is a wiring error,
+// so NewServer panics at construction rather than failing with a 500 under load.
 func NewServer(q queue.Queue) *Server {
-	return &Server{q: q, retryAfterSeconds: defaultRetryAfterSeconds}
+	sub, ok := q.(submitter)
+	if !ok {
+		panic("api.NewServer: queue does not support non-blocking Submit (cannot shed load)")
+	}
+	return &Server{q: sub, retryAfterSeconds: defaultRetryAfterSeconds}
 }
 
 // submitter is the non-blocking enqueue path the handler needs. The Queue
 // interface is intentionally backend-agnostic and does not include Submit
-// (shedding is a Memory-level concern), so the handler depends on this narrow
+// (shedding is a Memory-level concern), so the server depends on this narrow
 // capability — every shedding-capable backend can satisfy it.
 type submitter interface {
 	Submit(job queue.Job) error
@@ -53,16 +59,13 @@ func (s *Server) EnqueueHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-
-	sub, ok := s.q.(submitter)
-	if !ok {
-		// A backend without a non-blocking Submit cannot shed; refuse rather
-		// than silently block the request thread on Enqueue.
-		http.Error(w, "queue does not support non-blocking submit", http.StatusInternalServerError)
+	if req.ID == "" {
+		// ID is the idempotency seam F5 builds on; never enqueue an empty one.
+		http.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
 
-	err := sub.Submit(queue.Job{ID: req.ID, Payload: req.Payload})
+	err := s.q.Submit(queue.Job{ID: req.ID, Payload: req.Payload})
 	switch {
 	case errors.Is(err, queue.ErrQueueFull):
 		w.Header().Set("Retry-After", strconv.Itoa(s.retryAfterSeconds))

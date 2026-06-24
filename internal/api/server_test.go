@@ -93,3 +93,52 @@ func TestEnqueueHandlerRejectsBadBody(t *testing.T) {
 		t.Fatalf("EnqueueHandler with bad body status = %d, want %d (400)", rec.Code, http.StatusBadRequest)
 	}
 }
+
+// TestEnqueueHandlerRejectsEmptyID pins that an empty job ID is a client error
+// (400), not a silent 202. F5 builds idempotency on the ID, so an empty ID must
+// not slip onto the queue.
+func TestEnqueueHandlerRejectsEmptyID(t *testing.T) {
+	q := queue.NewMemory(4)
+	srv := api.NewServer(q)
+
+	req := httptest.NewRequest(http.MethodPost, "/enqueue", bytes.NewReader([]byte(`{"id":"","payload":""}`)))
+	rec := httptest.NewRecorder()
+
+	srv.EnqueueHandler(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("EnqueueHandler with empty id status = %d, want %d (400)", rec.Code, http.StatusBadRequest)
+	}
+	if _, err := q.Dequeue(contextWithImmediateCancel()); err == nil {
+		t.Error("a job with an empty ID was enqueued, want none")
+	}
+}
+
+// contextWithImmediateCancel returns an already-cancelled context so a Dequeue
+// on an empty queue returns immediately (ctx error) instead of blocking.
+func contextWithImmediateCancel() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+// TestNewServerRejectsNonSheddingBackend pins fail-fast wiring: a queue that
+// cannot shed (no non-blocking Submit) is a misconfiguration that must surface
+// at construction time, not as a 500 under load.
+func TestNewServerRejectsNonSheddingBackend(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewServer accepted a non-shedding backend, want a panic at construction")
+		}
+	}()
+	api.NewServer(nonSheddingQueue{})
+}
+
+// nonSheddingQueue implements queue.Queue but NOT the non-blocking Submit, so it
+// cannot shed load — exactly the backend NewServer must reject.
+type nonSheddingQueue struct{}
+
+func (nonSheddingQueue) Enqueue(context.Context, queue.Job) error   { return nil }
+func (nonSheddingQueue) Dequeue(context.Context) (queue.Job, error) { return queue.Job{}, nil }
+func (nonSheddingQueue) Ack(context.Context, queue.Job) error       { return nil }
+func (nonSheddingQueue) Nack(context.Context, queue.Job) error      { return nil }
