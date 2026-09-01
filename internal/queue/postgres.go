@@ -35,6 +35,7 @@ type Postgres struct {
 	maxAttempts       int
 	baseBackoff       time.Duration
 	maxBackoff        time.Duration
+	queueDepth        int
 }
 
 // Option configures a Postgres backend.
@@ -56,6 +57,18 @@ func WithMaxAttempts(n int) Option {
 // 30s max.
 func WithBackoff(base, max time.Duration) Option {
 	return func(p *Postgres) { p.baseBackoff, p.maxBackoff = base, max }
+}
+
+// WithQueueDepth sets the advisory bound Submit sheds at: while the queued
+// backlog holds n or more jobs, Submit returns ErrQueueFull. 0 (the default)
+// means unbounded — a durable table has no natural capacity, so shedding is
+// opt-in. The bound is advisory under concurrency: two Submits can read the
+// same backlog count and both insert (MVCC snapshots do not serialize the
+// count), overshooting by a request or two. That is acceptable for load
+// shedding, whose job is stopping runaway backlog growth, not enforcing an
+// exact ceiling.
+func WithQueueDepth(n int) Option {
+	return func(p *Postgres) { p.queueDepth = n }
 }
 
 // NewPostgres opens a connection pool to dsn, applies the schema, and returns a
@@ -86,6 +99,15 @@ func NewPostgres(ctx context.Context, dsn string, opts ...Option) (*Postgres, er
 // Close releases the connection pool.
 func (p *Postgres) Close() { p.pool.Close() }
 
+// pgPayload maps a nil payload to an empty byte slice. A payload-less job is
+// legal, but the column is NOT NULL and pgx would send nil as SQL NULL.
+func pgPayload(b []byte) []byte {
+	if b == nil {
+		return []byte{}
+	}
+	return b
+}
+
 // Enqueue inserts a job in the 'queued' state. Because this is a plain INSERT
 // in the caller's transaction scope, a job can be enqueued atomically with the
 // business data it concerns (transactional enqueue, no outbox needed).
@@ -102,11 +124,77 @@ func (p *Postgres) Enqueue(ctx context.Context, job Job) error {
 	_, err := p.pool.Exec(ctx,
 		`INSERT INTO jobs (id, payload, idempotency_key) VALUES ($1, $2, $3)
 		 ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
-		job.ID, job.Payload, key)
+		job.ID, pgPayload(job.Payload), key)
 	if err != nil {
 		return fmt.Errorf("enqueue %q: %w", job.ID, err)
 	}
 	return nil
+}
+
+// submitSQL is the bounded insert: the job lands only while the queued backlog
+// is below the bound ($4). Rows that are running, done, or dead do not count —
+// the bound gates waiting work, mirroring the in-memory buffer. The ON CONFLICT
+// clause keeps the idempotent-enqueue behaviour: a duplicate key inserts
+// nothing (0 rows), which Submit then distinguishes from a shed.
+const submitSQL = `
+INSERT INTO jobs (id, payload, idempotency_key)
+SELECT $1, $2, $3
+WHERE (SELECT count(*) FROM jobs WHERE status = 'queued') < $4
+ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`
+
+// Submit is the non-blocking enqueue path over the durable backend: it inserts
+// the job while the queued backlog is below the advisory WithQueueDepth bound
+// and sheds (ErrQueueFull) otherwise. Without a bound it is a durable Enqueue.
+// Dedupe takes precedence over capacity: a duplicate of an already-stored
+// idempotency key reports success — the job exists, which is exactly-once
+// effects — even when the backlog is full.
+func (p *Postgres) Submit(ctx context.Context, job Job) error {
+	if p.queueDepth <= 0 {
+		return p.Enqueue(ctx, job)
+	}
+	var key *string
+	if job.IdempotencyKey != "" {
+		key = &job.IdempotencyKey
+	}
+	tag, err := p.pool.Exec(ctx, submitSQL, job.ID, pgPayload(job.Payload), key, p.queueDepth)
+	if err != nil {
+		return fmt.Errorf("submit %q: %w", job.ID, err)
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	// Zero rows: either the capacity gate held the insert back or the
+	// idempotency conflict swallowed it. Check the key before reporting a shed.
+	if key != nil {
+		var dup bool
+		if err := p.pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM jobs WHERE idempotency_key = $1)`,
+			*key).Scan(&dup); err != nil {
+			return fmt.Errorf("submit %q: %w", job.ID, err)
+		}
+		if dup {
+			return nil
+		}
+	}
+	return ErrQueueFull
+}
+
+// SubmitWait is the blocking enqueue path: the backpressure counterpart to
+// Submit's shedding. It retries the bounded Submit every pollInterval until a
+// backlog slot frees (mirroring Dequeue's polling contract), or returns
+// ctx.Err() when the caller gives up first.
+func (p *Postgres) SubmitWait(ctx context.Context, job Job) error {
+	for {
+		err := p.Submit(ctx, job)
+		if !errors.Is(err, ErrQueueFull) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(p.pollInterval):
+		}
+	}
 }
 
 // dequeueSQL reserves the oldest eligible job in one atomic statement. A row is

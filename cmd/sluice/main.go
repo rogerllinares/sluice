@@ -60,7 +60,10 @@ func main() {
 
 	// HTTP producer edge: POST /enqueue -> Submit -> 202, or 429 + Retry-After
 	// when the bounded queue is full (load shedding made visible).
-	srv := api.NewServer(q)
+	srv, err := api.NewServer(q)
+	if err != nil {
+		log.Fatalf("construct api server: %v", err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /enqueue", srv.EnqueueHandler)
 	httpServer := &http.Server{Addr: httpAddr, Handler: mux}

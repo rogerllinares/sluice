@@ -177,8 +177,12 @@ func (m *Memory) DeadLettered() []Job {
 
 // Submit is the non-blocking enqueue path: it adds a job if a slot is free,
 // otherwise sheds load by returning ErrQueueFull instead of blocking. It honours
-// the same idempotency dedupe as Enqueue.
-func (m *Memory) Submit(job Job) error {
+// the same idempotency dedupe as Enqueue. The send itself never blocks, so ctx
+// only gates entry: a cancelled request is not enqueued.
+func (m *Memory) Submit(ctx context.Context, job Job) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if m.duplicate(job.IdempotencyKey) {
 		return nil
 	}
