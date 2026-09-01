@@ -15,9 +15,20 @@ services:
         condition: service_healthy
     environment:
       SLUICE_DATABASE_URL: postgres://sluice:sluice@postgres:5432/sluice?sslmode=disable
+      # Every knob is overridable from the host shell, so the demos can tune
+      # pacing without editing this file (e.g. SLUICE_QUEUE_DEPTH=5 for the
+      # shedding demo, SLUICE_VISIBILITY_TIMEOUT=5s for the redelivery demo).
+      SLUICE_QUEUE_DEPTH: ${SLUICE_QUEUE_DEPTH:-100}
+      SLUICE_NUM_WORKERS: ${SLUICE_NUM_WORKERS:-0}
+      SLUICE_VISIBILITY_TIMEOUT: ${SLUICE_VISIBILITY_TIMEOUT:-30s}
+      SLUICE_MAX_ATTEMPTS: ${SLUICE_MAX_ATTEMPTS:-3}
+      SLUICE_BASE_BACKOFF: ${SLUICE_BASE_BACKOFF:-500ms}
+      SLUICE_MAX_BACKOFF: ${SLUICE_MAX_BACKOFF:-30s}
+      SLUICE_SHUTDOWN_CEILING: ${SLUICE_SHUTDOWN_CEILING:-20s}
     ports:
       - "8080:8080"
     restart: unless-stopped
+    stop_grace_period: 25s
 
   postgres:
     image: postgres:16-alpine

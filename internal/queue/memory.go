@@ -27,9 +27,14 @@ type Memory struct {
 	seenKeys map[string]struct{} // idempotency keys already enqueued
 	dead     []Job               // dead-lettered jobs (past MaxAttempts)
 
-	// retries tracks in-flight backoff timers so tests (and callers) can wait
-	// for pending redeliveries to land instead of racing them — see WaitRetries.
-	retries sync.WaitGroup
+	// pendingRetries counts in-flight backoff timers, and retriesIdle is
+	// closed whenever that count is zero (and replaced when it leaves zero).
+	// Both are guarded by mu. This lets WaitRetries select "no pending
+	// redeliveries" against a caller's ctx — a WaitGroup cannot be waited on
+	// with a deadline, and its Add-concurrent-with-Wait contract is exactly
+	// the Nack-vs-shutdown race this design removes.
+	pendingRetries int
+	retriesIdle    chan struct{}
 }
 
 // MemoryOption configures a Memory backend.
@@ -50,12 +55,15 @@ func WithMemoryBackoff(base, max time.Duration) MemoryOption {
 
 // NewMemory returns a Memory whose buffer holds at most depth jobs.
 func NewMemory(depth int, opts ...MemoryOption) *Memory {
+	idle := make(chan struct{})
+	close(idle) // no retries pending yet: born idle
 	m := &Memory{
 		jobs:        make(chan Job, depth),
 		maxAttempts: defaultMaxAttempts,
 		baseBackoff: defaultBaseBackoff,
 		maxBackoff:  defaultMaxBackoff,
 		seenKeys:    make(map[string]struct{}),
+		retriesIdle: idle,
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -137,12 +145,12 @@ func (m *Memory) Nack(_ context.Context, job Job) error {
 	}
 	delay := backoffDelay(job.Attempts, m.baseBackoff, m.maxBackoff)
 	// Re-enqueue after the backoff on a tracked timer goroutine: the retry must
-	// outlive the Nack call, so it cannot borrow Nack's ctx. retries lets
-	// WaitRetries block until every pending redelivery has landed, which keeps
-	// the redelivery race out of the goleak/shutdown path.
-	m.retries.Add(1)
+	// outlive the Nack call, so it cannot borrow Nack's ctx. The pending count
+	// lets WaitRetries observe when every scheduled redelivery has landed,
+	// which keeps the redelivery race out of the goleak/shutdown path.
+	m.retryScheduled()
 	time.AfterFunc(delay, func() {
-		defer m.retries.Done()
+		defer m.retryFinished()
 		select {
 		case m.jobs <- job:
 		default:
@@ -158,11 +166,44 @@ func (m *Memory) Nack(_ context.Context, job Job) error {
 	return nil
 }
 
-// WaitRetries blocks until every scheduled backoff redelivery has fired (either
-// re-enqueued or, if the buffer was full, dead-lettered). Tests use it to drain
-// pending retries deterministically instead of sleeping; it is also the hook a
-// graceful shutdown (F6) would use to avoid stranding in-flight retries.
-func (m *Memory) WaitRetries() { m.retries.Wait() }
+// retryScheduled registers a pending backoff timer. When the count leaves
+// zero, the idle channel is replaced so waiters only observe a later idle
+// instant.
+func (m *Memory) retryScheduled() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pendingRetries == 0 {
+		m.retriesIdle = make(chan struct{})
+	}
+	m.pendingRetries++
+}
+
+// retryFinished retires a pending backoff timer, signalling idle at zero.
+func (m *Memory) retryFinished() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pendingRetries--
+	if m.pendingRetries == 0 {
+		close(m.retriesIdle)
+	}
+}
+
+// WaitRetries blocks until every scheduled backoff redelivery has fired
+// (either re-enqueued or, if the buffer was full, dead-lettered), or until ctx
+// is done — so a pending long backoff can never pin a shutdown past its
+// ceiling. Tests use it to drain pending retries deterministically instead of
+// sleeping; the composition root uses it as the final drain step.
+func (m *Memory) WaitRetries(ctx context.Context) error {
+	m.mu.Lock()
+	idle := m.retriesIdle
+	m.mu.Unlock()
+	select {
+	case <-idle:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 // DeadLettered returns a snapshot of jobs that exceeded MaxAttempts. It is the
 // in-memory analogue of querying the Postgres 'dead' status — read-only, never
