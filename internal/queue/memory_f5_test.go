@@ -195,7 +195,7 @@ func TestMemoryConcurrentSubmitDedupesSameKey(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			_ = q.Submit(queue.Job{ID: "j", IdempotencyKey: "same-key"})
+			_ = q.Submit(context.Background(), queue.Job{ID: "j", IdempotencyKey: "same-key"})
 		}(i)
 	}
 	wg.Wait()
@@ -232,7 +232,7 @@ func TestMemoryRetryDropsToDeadLetterWhenBufferFull(t *testing.T) {
 		t.Fatalf("Dequeue retry: %v", err)
 	}
 	// Occupy the single slot so the retry has nowhere to land.
-	if err := q.Submit(queue.Job{ID: "blocker"}); err != nil {
+	if err := q.Submit(ctx, queue.Job{ID: "blocker"}); err != nil {
 		t.Fatalf("Submit blocker: %v", err)
 	}
 	// Nack the under-max job: its retry timer will fire and find no room.

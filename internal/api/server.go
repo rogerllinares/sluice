@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -23,29 +25,34 @@ type Server struct {
 }
 
 // NewServer constructs a Server over the given queue. The queue must support
-// non-blocking shedding (Submit); a backend that cannot shed is a wiring error,
-// so NewServer panics at construction rather than failing with a 500 under load.
-func NewServer(q queue.Queue) *Server {
+// non-blocking shedding (Submit); a backend that cannot shed is a wiring error
+// surfaced as a construction error — never as a 500 under load.
+func NewServer(q queue.Queue) (*Server, error) {
 	sub, ok := q.(submitter)
 	if !ok {
-		panic("api.NewServer: queue does not support non-blocking Submit (cannot shed load)")
+		return nil, fmt.Errorf("api.NewServer: queue %T does not support non-blocking Submit (cannot shed load)", q)
 	}
-	return &Server{q: sub, retryAfterSeconds: defaultRetryAfterSeconds}
+	return &Server{q: sub, retryAfterSeconds: defaultRetryAfterSeconds}, nil
 }
 
 // submitter is the non-blocking enqueue path the handler needs. The Queue
-// interface is intentionally backend-agnostic and does not include Submit
-// (shedding is a Memory-level concern), so the server depends on this narrow
-// capability — every shedding-capable backend can satisfy it.
+// interface is intentionally backend-agnostic and does not include Submit, so
+// the server depends on this narrow capability — every shedding-capable
+// backend (Memory's bounded buffer, Postgres' advisory WithQueueDepth bound)
+// satisfies it. The ctx carries the request's cancellation and deadline into
+// the enqueue path.
 type submitter interface {
-	Submit(job queue.Job) error
+	Submit(ctx context.Context, job queue.Job) error
 }
 
 // enqueueRequest is the JSON shape accepted by EnqueueHandler. Payload is a
-// base64 string on the wire (encoding/json's standard []byte encoding).
+// base64 string on the wire (encoding/json's standard []byte encoding). An
+// optional idempotency_key makes the enqueue deduplicating: a producer that
+// retries the request never creates a second job.
 type enqueueRequest struct {
-	ID      string `json:"id"`
-	Payload []byte `json:"payload"`
+	ID             string `json:"id"`
+	Payload        []byte `json:"payload"`
+	IdempotencyKey string `json:"idempotency_key"`
 }
 
 // EnqueueHandler accepts a job over HTTP and enqueues it via the non-blocking
@@ -65,7 +72,11 @@ func (s *Server) EnqueueHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.q.Submit(queue.Job{ID: req.ID, Payload: req.Payload})
+	err := s.q.Submit(r.Context(), queue.Job{
+		ID:             req.ID,
+		Payload:        req.Payload,
+		IdempotencyKey: req.IdempotencyKey,
+	})
 	switch {
 	case errors.Is(err, queue.ErrQueueFull):
 		w.Header().Set("Retry-After", strconv.Itoa(s.retryAfterSeconds))

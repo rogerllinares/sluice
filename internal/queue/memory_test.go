@@ -98,13 +98,13 @@ func TestMemorySubmitShedsWhenFull(t *testing.T) {
 
 	// Fill the buffer to its bound.
 	for i := 0; i < depth; i++ {
-		if err := q.Submit(queue.Job{ID: "fill"}); err != nil {
+		if err := q.Submit(context.Background(), queue.Job{ID: "fill"}); err != nil {
 			t.Fatalf("Submit #%d returned error before buffer was full: %v", i, err)
 		}
 	}
 
 	// One more must be shed, not block.
-	err := q.Submit(queue.Job{ID: "overflow"})
+	err := q.Submit(context.Background(), queue.Job{ID: "overflow"})
 	if !errors.Is(err, queue.ErrQueueFull) {
 		t.Fatalf("Submit() on full queue = %v, want ErrQueueFull", err)
 	}
@@ -121,7 +121,7 @@ func TestMemorySubmitWaitBlocksUntilSlotFrees(t *testing.T) {
 	q := queue.NewMemory(depth)
 
 	// Fill the buffer to its bound.
-	if err := q.Submit(queue.Job{ID: "fill"}); err != nil {
+	if err := q.Submit(ctx, queue.Job{ID: "fill"}); err != nil {
 		t.Fatalf("Submit to fill buffer returned error: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestMemorySubmitWaitRespectsContext(t *testing.T) {
 	q := queue.NewMemory(depth)
 
 	// Fill the buffer so SubmitWait has to wait.
-	if err := q.Submit(queue.Job{ID: "fill"}); err != nil {
+	if err := q.Submit(context.Background(), queue.Job{ID: "fill"}); err != nil {
 		t.Fatalf("Submit to fill buffer returned error: %v", err)
 	}
 
@@ -179,10 +179,10 @@ func TestMemorySubmitRoomAfterDequeue(t *testing.T) {
 	const depth = 1
 	q := queue.NewMemory(depth)
 
-	if err := q.Submit(queue.Job{ID: "first"}); err != nil {
+	if err := q.Submit(ctx, queue.Job{ID: "first"}); err != nil {
 		t.Fatalf("first Submit returned error: %v", err)
 	}
-	if err := q.Submit(queue.Job{ID: "second"}); !errors.Is(err, queue.ErrQueueFull) {
+	if err := q.Submit(ctx, queue.Job{ID: "second"}); !errors.Is(err, queue.ErrQueueFull) {
 		t.Fatalf("second Submit = %v, want ErrQueueFull", err)
 	}
 
@@ -190,7 +190,7 @@ func TestMemorySubmitRoomAfterDequeue(t *testing.T) {
 		t.Fatalf("Dequeue() returned error: %v", err)
 	}
 
-	if err := q.Submit(queue.Job{ID: "third"}); err != nil {
+	if err := q.Submit(ctx, queue.Job{ID: "third"}); err != nil {
 		t.Errorf("Submit after Dequeue freed a slot = %v, want nil", err)
 	}
 }
