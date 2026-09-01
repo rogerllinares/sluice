@@ -36,3 +36,9 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: v2.12.2
+
+      # The Dockerfile is a documented entry point (docker compose up --build),
+      # so its build must be guarded like the code: a Go-version bump in go.mod
+      # that leaves the builder image behind breaks every fresh clone.
+      - name: docker build
+        run: docker build .

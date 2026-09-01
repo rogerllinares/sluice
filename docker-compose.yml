@@ -14,9 +14,9 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      # TODO(F2): real DSN / config keys once the Postgres backend lands.
       SLUICE_DATABASE_URL: postgres://sluice:sluice@postgres:5432/sluice?sslmode=disable
-    # TODO(F4/F7): expose the HTTP/metrics port (ports: ["8080:8080"]).
+    ports:
+      - "8080:8080"
     restart: unless-stopped
 
   postgres:

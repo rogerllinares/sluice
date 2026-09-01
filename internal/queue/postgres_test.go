@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
@@ -18,10 +20,40 @@ import (
 // row, and a crashed worker's in-flight job becomes visible again after the
 // visibility timeout.
 
+// requireDocker gates the integration tests on a healthy Docker provider.
+// On a machine without a running daemon the tests skip with a clear message
+// (go test ./... stays green for reviewers without Docker); in CI the daemon
+// is part of the contract, so the same condition fails loudly instead — the
+// suite must never silently shrink where it is authoritative.
+func requireDocker(t *testing.T) {
+	t.Helper()
+	unavailable := func(reason any) {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("docker daemon unavailable in CI (integration tests must run here): %v", reason)
+		}
+		t.Skipf("skipping integration test: docker daemon unavailable: %v", reason)
+	}
+	// GetProvider can panic on exotic misconfigurations (see the upstream
+	// SkipIfProviderIsNotHealthy helper); treat that the same as an error.
+	defer func() {
+		if r := recover(); r != nil {
+			unavailable(r)
+		}
+	}()
+	provider, err := testcontainers.ProviderDocker.GetProvider()
+	if err == nil {
+		err = provider.Health(context.Background())
+	}
+	if err != nil {
+		unavailable(err)
+	}
+}
+
 // newTestContainer starts an ephemeral Postgres and returns its DSN. Cleanup is
 // registered on t.
 func newTestContainer(t *testing.T) string {
 	t.Helper()
+	requireDocker(t)
 	ctx := context.Background()
 	ctr, err := postgres.Run(ctx, "postgres:16-alpine",
 		postgres.WithDatabase("sluice"),
