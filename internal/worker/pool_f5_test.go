@@ -61,7 +61,9 @@ func TestPoolFailingJobDeadLettersAfterMaxAttempts(t *testing.T) {
 	// retries drain no further delivery can occur.
 	cancel()
 	pool.Wait()
-	q.WaitRetries()
+	if err := q.WaitRetries(context.Background()); err != nil {
+		t.Fatalf("WaitRetries: %v", err)
+	}
 
 	if got := atomic.LoadInt64(&runs); got != maxAttempts {
 		t.Errorf("handler ran %d times, want exactly %d (MaxAttempts)", got, maxAttempts)
