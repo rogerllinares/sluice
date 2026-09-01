@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # ---- builder stage ----
-# Pin the Go version to match go.mod (1.22). Build a static binary so the
-# runtime stage can be minimal/distroless.
-FROM golang:1.22-alpine AS builder
+# Pin the Go version to match go.mod (1.25). CI's docker-build step keeps this
+# honest. Build a static binary so the runtime stage can be minimal/distroless.
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
 
@@ -24,6 +24,6 @@ FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 WORKDIR /app
 COPY --from=builder /out/sluice /app/sluice
 
-# TODO(F4/F7): EXPOSE the HTTP/metrics port once the API server lands.
+EXPOSE 8080
 USER nonroot:nonroot
 ENTRYPOINT ["/app/sluice"]
