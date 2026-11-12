@@ -53,8 +53,10 @@ func WithMemoryBackoff(base, max time.Duration) MemoryOption {
 	return func(m *Memory) { m.baseBackoff, m.maxBackoff = base, max }
 }
 
-// NewMemory returns a Memory whose buffer holds at most depth jobs.
+// NewMemory returns a Memory whose buffer holds at most depth jobs. A depth
+// below 1 is clamped to 1: an unbuffered channel would shed every Submit.
 func NewMemory(depth int, opts ...MemoryOption) *Memory {
+	depth = max(depth, 1)
 	idle := make(chan struct{})
 	close(idle) // no retries pending yet: born idle
 	m := &Memory{

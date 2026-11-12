@@ -40,6 +40,9 @@ func backoffDelay(attempt int, base, maxDelay time.Duration) time.Duration {
 	if capped > maxDelay {
 		capped = maxDelay
 	}
+	if capped < 1 {
+		return 0 // a zero/negative backoff option means "retry now"; rand.Int63n(0) would panic
+	}
 	// Full jitter: a random amount in [0, capped) added to the capped base.
 	jitter := time.Duration(rand.Int63n(int64(capped)))
 	return capped + jitter
