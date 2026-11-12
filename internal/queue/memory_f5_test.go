@@ -211,37 +211,3 @@ func TestMemoryConcurrentSubmitDedupesSameKey(t *testing.T) {
 		t.Fatalf("a second job with the same key was enqueued (%q); want exactly one", got.ID)
 	}
 }
-
-// TestMemoryRetryDropsToDeadLetterWhenBufferFull covers the documented
-// limitation: if the buffer is full when a backoff retry fires, the job is
-// dead-lettered (not silently lost). We use depth=1, keep the slot occupied,
-// nack a job below MaxAttempts, and assert it lands in the dead-letter list.
-func TestMemoryRetryDropsToDeadLetterWhenBufferFull(t *testing.T) {
-	ctx := context.Background()
-	q := queue.NewMemory(1,
-		queue.WithMemoryMaxAttempts(5),
-		queue.WithMemoryBackoff(5*time.Millisecond, 20*time.Millisecond),
-	)
-
-	// Dequeue the job to retry (frees the slot, attempts=1).
-	if err := q.Enqueue(ctx, queue.Job{ID: "retry"}); err != nil {
-		t.Fatalf("Enqueue retry: %v", err)
-	}
-	job, err := dequeueWithinMem(t, q, 2*time.Second)
-	if err != nil {
-		t.Fatalf("Dequeue retry: %v", err)
-	}
-	// Occupy the single slot so the retry has nowhere to land.
-	if err := q.Submit(ctx, queue.Job{ID: "blocker"}); err != nil {
-		t.Fatalf("Submit blocker: %v", err)
-	}
-	// Nack the under-max job: its retry timer will fire and find no room.
-	if err := q.Nack(ctx, job); err != nil {
-		t.Fatalf("Nack: %v", err)
-	}
-
-	dl := waitForDeadLetter(t, q, 1, 2*time.Second)
-	if dl[0].ID != "retry" {
-		t.Fatalf("dead-lettered %q, want retry (dropped because buffer was full)", dl[0].ID)
-	}
-}

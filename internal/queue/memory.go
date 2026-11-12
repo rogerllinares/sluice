@@ -137,7 +137,8 @@ func (m *Memory) Ack(_ context.Context, _ Job) error {
 // redelivered); otherwise it is redelivered after a backoff delay. The
 // redelivery is scheduled on a timer so the buffer slot is not held during the
 // wait; the re-enqueued copy carries the current Attempts so the count keeps
-// climbing across retries.
+// climbing across retries. A full buffer at retry time delays the retry; it
+// never dead-letters a job that has attempts left.
 func (m *Memory) Nack(_ context.Context, job Job) error {
 	if job.Attempts >= m.maxAttempts {
 		m.mu.Lock()
@@ -151,21 +152,23 @@ func (m *Memory) Nack(_ context.Context, job Job) error {
 	// lets WaitRetries observe when every scheduled redelivery has landed,
 	// which keeps the redelivery race out of the goleak/shutdown path.
 	m.retryScheduled()
+	m.redeliver(job, delay)
+	return nil
+}
+
+// redeliver re-enqueues job after delay. If the buffer is still full when the
+// timer fires, it waits another delay and tries again instead of dead-lettering
+// a job that has attempts left; the retry stays pending (WaitRetries keeps
+// waiting) until it lands, so a shutdown ceiling still bounds the wait.
+func (m *Memory) redeliver(job Job, delay time.Duration) {
 	time.AfterFunc(delay, func() {
-		defer m.retryFinished()
 		select {
 		case m.jobs <- job:
+			m.retryFinished()
 		default:
-			// Buffer full at retry time: drop into the dead-letter list rather
-			// than block a timer goroutine. At-least-once is preserved up to
-			// capacity; documented as a known in-memory limitation (Postgres,
-			// the durable backend, has no such bound).
-			m.mu.Lock()
-			m.dead = append(m.dead, job)
-			m.mu.Unlock()
+			m.redeliver(job, delay)
 		}
 	})
-	return nil
 }
 
 // retryScheduled registers a pending backoff timer. When the count leaves
@@ -191,7 +194,7 @@ func (m *Memory) retryFinished() {
 }
 
 // WaitRetries blocks until every scheduled backoff redelivery has fired
-// (either re-enqueued or, if the buffer was full, dead-lettered), or until ctx
+// (re-enqueued; a full buffer only delays it), or until ctx
 // is done — so a pending long backoff can never pin a shutdown past its
 // ceiling. Tests use it to drain pending retries deterministically instead of
 // sleeping; the composition root uses it as the final drain step.
