@@ -108,9 +108,10 @@ func pgPayload(b []byte) []byte {
 	return b
 }
 
-// Enqueue inserts a job in the 'queued' state. Because this is a plain INSERT
-// in the caller's transaction scope, a job can be enqueued atomically with the
-// business data it concerns (transactional enqueue, no outbox needed).
+// Enqueue inserts a job in the 'queued' state. It runs on the pool in its own
+// implicit transaction, so it is NOT atomic with the caller's business writes;
+// enqueueing inside a caller's transaction (no outbox) would need a pgx.Tx
+// variant, which does not exist yet.
 //
 // When the job carries an IdempotencyKey, ON CONFLICT DO NOTHING against the
 // partial unique index makes a duplicate enqueue a silent no-op — an
