@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"sync"
 
@@ -32,12 +33,11 @@ import (
 // this, so the process can exit instead of being pinned by a hung job.
 var ErrShutdownTimeout = errors.New("worker: shutdown ceiling exceeded, forced abort")
 
-// Config holds the pool's two independent knobs.
-//
-// Only NumWorkers is pinned by the F1 slice; per-job timeout and shutdown-ceiling
-// fields are added in F3/F6 when their tests demand them.
+// Config holds the pool's knobs. Logger receives Ack/Nack failures; nil means
+// slog.Default().
 type Config struct {
 	NumWorkers int
+	Logger     *slog.Logger
 }
 
 // Pool is a fixed-size set of workers draining a queue.Queue.
@@ -87,6 +87,9 @@ func New(q queue.Queue, h Handler, cfg Config) *Pool {
 	if cfg.NumWorkers <= 0 {
 		cfg.NumWorkers = runtime.NumCPU()
 	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
 	return &Pool{q: q, h: h, cfg: cfg}
 }
 
@@ -133,10 +136,18 @@ func (p *Pool) work() {
 			// attempts or decide the cap — it just reports the failure. The
 			// backend reads the job's authoritative Attempts and either
 			// redelivers after a backoff or dead-letters it past MaxAttempts.
-			_ = p.q.Nack(p.jobCtx, job)
+			p.report("nack", job, p.q.Nack(p.jobCtx, job))
 			continue
 		}
-		_ = p.q.Ack(p.jobCtx, job)
+		p.report("ack", job, p.q.Ack(p.jobCtx, job))
+	}
+}
+
+// report logs a failed Ack/Nack: the backend did not record the outcome, so the
+// job may be redelivered (at-least-once) or sit until its lease expires.
+func (p *Pool) report(op string, job queue.Job, err error) {
+	if err != nil {
+		p.cfg.Logger.Error("worker: "+op+" failed", "job", job.ID, "err", err)
 	}
 }
 

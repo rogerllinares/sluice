@@ -77,7 +77,7 @@ func run() error {
 	// context here would cancel dequeueCtx AND jobCtx the instant SIGTERM
 	// arrives, aborting in-flight jobs and making the graceful drain
 	// unreachable.
-	pool := worker.New(q, newDemoHandler(logger), worker.Config{NumWorkers: cfg.NumWorkers})
+	pool := worker.New(q, newDemoHandler(logger), worker.Config{NumWorkers: cfg.NumWorkers, Logger: logger})
 	if err := pool.Start(context.Background()); err != nil {
 		return fmt.Errorf("start worker pool: %v", err)
 	}
