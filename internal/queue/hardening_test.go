@@ -57,3 +57,34 @@ func TestNackRetryWaitsForRoomInsteadOfDeadLettering(t *testing.T) {
 		t.Fatalf("redelivered %q attempts %d, want retry with 2", job.ID, job.Attempts)
 	}
 }
+
+// TOCTOU: a duplicate key used to count as "already enqueued" from the moment
+// the first caller claimed it, before its send succeeded. If that send then
+// failed, the duplicate had already been told nil and the job was lost.
+func TestDuplicateWhileFirstEnqueueIsBlockedIsNotReportedEnqueued(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemory(1)
+	if err := m.Submit(ctx, Job{ID: "filler"}); err != nil {
+		t.Fatal(err)
+	}
+	firstCtx, cancelFirst := context.WithCancel(ctx)
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- m.Enqueue(firstCtx, Job{ID: "a", IdempotencyKey: "k"}) }()
+	time.Sleep(20 * time.Millisecond) // the first caller holds the key, blocked on the full buffer
+
+	if err := m.Submit(ctx, Job{ID: "b", IdempotencyKey: "k"}); err != ErrQueueFull {
+		t.Fatalf("Submit duplicate while first is in flight = %v, want ErrQueueFull", err)
+	}
+	dupCtx, cancelDup := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancelDup()
+	dupDone := make(chan error, 1)
+	go func() { dupDone <- m.Enqueue(dupCtx, Job{ID: "c", IdempotencyKey: "k"}) }()
+	time.Sleep(20 * time.Millisecond)
+	cancelFirst() // the first send fails: the key was never enqueued
+	if err := <-firstDone; err == nil {
+		t.Fatal("first Enqueue succeeded on a full buffer")
+	}
+	if err := <-dupDone; err == nil {
+		t.Fatal("duplicate Enqueue reported nil, but no job with key k is in the queue")
+	}
+}
