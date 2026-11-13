@@ -10,7 +10,7 @@ import (
 	"github.com/rogerllinares/sluice/internal/worker"
 )
 
-// pool_f5_test.go pins the F5 retry-accounting reconciliation: the pool no
+// pool_retry_test.go pins the F5 retry-accounting reconciliation: the pool no
 // longer counts attempts itself. On handler failure it simply Nacks, and the
 // backend (which owns the authoritative Attempts count) decides redelivery vs
 // dead-letter. So a permanently failing job runs exactly MaxAttempts times and

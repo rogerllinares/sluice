@@ -9,7 +9,7 @@ import (
 	"github.com/rogerllinares/sluice/internal/queue"
 )
 
-// memory_f5_test.go specifies the F5 reliability semantics on the in-memory
+// memory_reliability_test.go specifies the F5 reliability semantics on the in-memory
 // backend: idempotent enqueue (dedupe on key), bounded retries with backoff,
 // and the dead-letter path once a job is past max retries. The durable backend
 // proves the same contract against real Postgres (postgres_f5_test.go); the
