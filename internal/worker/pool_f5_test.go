@@ -38,9 +38,7 @@ func TestPoolFailingJobDeadLettersAfterMaxAttempts(t *testing.T) {
 	}
 
 	pool := worker.New(q, handler, worker.Config{NumWorkers: 2})
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	pool.Start(ctx)
 	if err := q.Enqueue(ctx, queue.Job{ID: "always-fails"}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}

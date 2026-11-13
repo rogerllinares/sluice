@@ -66,13 +66,15 @@ type Pool struct {
 	cfg Config
 	wg  sync.WaitGroup
 
+	// mu guards the cancel funcs: Start writes them while Shutdown/Stop may read
+	// them from another goroutine. The contexts themselves are handed to each
+	// worker as arguments, so workers never read shared fields.
+	mu sync.Mutex
 	// stopDequeue cancels dequeueCtx (stop pulling new jobs — graceful drain).
 	// abort cancels jobCtx (cancel in-flight work — force path / Stop).
-	// Both are set by Start; calling them before Start is a no-op guarded by nil.
+	// Both are set by Start; nil means never started (Shutdown/Stop are no-ops).
 	stopDequeue context.CancelFunc
 	abort       context.CancelFunc
-	dequeueCtx  context.Context
-	jobCtx      context.Context
 }
 
 // Handler processes a single job. Returning an error triggers Nack
@@ -102,16 +104,27 @@ func (p *Pool) Size() int { return p.cfg.NumWorkers }
 // stop pulling new jobs) and jobCtx (handed to handlers; cancelled only to force
 // in-flight work to abort). Cancelling the parent ctx — e.g. the SIGTERM context
 // from signal.NotifyContext — still aborts everything immediately.
-func (p *Pool) Start(ctx context.Context) error {
+func (p *Pool) Start(ctx context.Context) {
 	// Independent siblings off ctx (NOT jobCtx off dequeueCtx) so the graceful
 	// "stop pulling" cancel does not also abort in-flight handlers.
-	p.dequeueCtx, p.stopDequeue = context.WithCancel(ctx)
-	p.jobCtx, p.abort = context.WithCancel(ctx)
+	dequeueCtx, stopDequeue := context.WithCancel(ctx)
+	jobCtx, abort := context.WithCancel(ctx)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stopDequeue, p.abort = stopDequeue, abort
+	// Add under mu: Shutdown only Waits after seeing the cancel funcs set here.
 	p.wg.Add(p.cfg.NumWorkers)
 	for i := 0; i < p.cfg.NumWorkers; i++ {
-		go p.work()
+		go p.work(dequeueCtx, jobCtx)
 	}
-	return nil
+}
+
+// cancels returns the cancel funcs Start set (both nil before Start).
+func (p *Pool) cancels() (stopDequeue, abort context.CancelFunc) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stopDequeue, p.abort
 }
 
 // Wait blocks until every worker goroutine has returned (after ctx is
@@ -124,22 +137,22 @@ func (p *Pool) Wait() { p.wg.Wait() }
 // its current job, if any, returns) and runs the handler with jobCtx (cancelled
 // only by the force path / Stop, so a graceful drain lets in-flight work
 // finish). It signals the WaitGroup on exit so Wait can observe a clean drain.
-func (p *Pool) work() {
+func (p *Pool) work(dequeueCtx, jobCtx context.Context) {
 	defer p.wg.Done()
 	for {
-		job, err := p.q.Dequeue(p.dequeueCtx)
+		job, err := p.q.Dequeue(dequeueCtx)
 		if err != nil {
 			return
 		}
-		if err := p.handle(p.jobCtx, job); err != nil {
+		if err := p.handle(jobCtx, job); err != nil {
 			// Delivery failed (handler error or panic). The pool does not count
 			// attempts or decide the cap — it just reports the failure. The
 			// backend reads the job's authoritative Attempts and either
 			// redelivers after a backoff or dead-letters it past MaxAttempts.
-			p.report("nack", job, p.q.Nack(p.jobCtx, job))
+			p.report("nack", job, p.q.Nack(jobCtx, job))
 			continue
 		}
-		p.report("ack", job, p.q.Ack(p.jobCtx, job))
+		p.report("ack", job, p.q.Ack(jobCtx, job))
 	}
 }
 
@@ -172,10 +185,11 @@ func (p *Pool) handle(ctx context.Context, job queue.Job) (err error) {
 //
 // Shutdown before Start, or a double Shutdown, is a no-op (nil cancels guarded).
 func (p *Pool) Shutdown(ctx context.Context) error {
-	if p.stopDequeue == nil {
+	stopDequeue, abort := p.cancels()
+	if stopDequeue == nil {
 		return nil // never started
 	}
-	p.stopDequeue() // stop pulling new jobs — begin the graceful drain
+	stopDequeue() // stop pulling new jobs — begin the graceful drain
 
 	done := make(chan struct{})
 	go func() {
@@ -190,7 +204,7 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 		// Ceiling hit: a job is hanging. Force in-flight work to abort so the
 		// process is not pinned, then wait for the workers to actually exit
 		// (keeps the pool leak-free) before reporting the timeout.
-		p.abort()
+		abort()
 		p.wg.Wait()
 		return ErrShutdownTimeout
 	}
@@ -202,9 +216,10 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 // finishes its current job nor blocks on the next Dequeue; it exits. Callers
 // Wait afterwards to confirm the workers exited. Stop before Start is a no-op.
 func (p *Pool) Stop() {
-	if p.stopDequeue == nil {
+	stopDequeue, abort := p.cancels()
+	if stopDequeue == nil {
 		return // never started
 	}
-	p.stopDequeue()
-	p.abort()
+	stopDequeue()
+	abort()
 }

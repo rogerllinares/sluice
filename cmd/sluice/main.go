@@ -78,9 +78,7 @@ func run() error {
 	// arrives, aborting in-flight jobs and making the graceful drain
 	// unreachable.
 	pool := worker.New(q, newDemoHandler(logger), worker.Config{NumWorkers: cfg.NumWorkers, Logger: logger})
-	if err := pool.Start(context.Background()); err != nil {
-		return fmt.Errorf("start worker pool: %v", err)
-	}
+	pool.Start(context.Background())
 	logger.Info("worker pool started", "workers", pool.Size())
 
 	// HTTP producer edge: POST /enqueue -> Submit -> 202, or 429 + Retry-After

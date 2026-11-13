@@ -49,9 +49,7 @@ func TestPoolProcessesConcurrentlyWithNWorkers(t *testing.T) {
 	}
 
 	pool := worker.New(q, handler, worker.Config{NumWorkers: workers})
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	pool.Start(ctx)
 
 	for i := 0; i < workers; i++ {
 		if err := q.Enqueue(ctx, queue.Job{ID: "j"}); err != nil {
@@ -116,9 +114,7 @@ func TestPoolContainsPanickingJob(t *testing.T) {
 	}
 
 	pool := worker.New(q, handler, worker.Config{NumWorkers: 2})
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	pool.Start(ctx)
 
 	if err := q.Enqueue(ctx, queue.Job{ID: "poison"}); err != nil {
 		t.Fatalf("Enqueue poison: %v", err)
@@ -170,9 +166,7 @@ func TestPoolNoGoroutineLeak(t *testing.T) {
 	}
 
 	pool := worker.New(q, handler, worker.Config{NumWorkers: 3})
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	pool.Start(ctx)
 	for i := 0; i < 4; i++ {
 		if err := q.Enqueue(ctx, queue.Job{ID: "j"}); err != nil {
 			t.Fatalf("Enqueue: %v", err)

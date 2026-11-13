@@ -43,9 +43,7 @@ func TestWorkerProcessesJobOnce(t *testing.T) {
 	if pool == nil {
 		t.Fatal("worker.New returned nil")
 	}
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("pool.Start returned error: %v", err)
-	}
+	pool.Start(ctx)
 
 	if err := q.Enqueue(ctx, queue.Job{ID: "only-job"}); err != nil {
 		t.Fatalf("Enqueue returned error: %v", err)
@@ -103,9 +101,7 @@ func TestWorkerProcessesEveryJobExactlyOnce(t *testing.T) {
 	if pool == nil {
 		t.Fatal("worker.New returned nil")
 	}
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("pool.Start returned error: %v", err)
-	}
+	pool.Start(ctx)
 
 	ids := make([]string, 0, n)
 	for i := 0; i < n; i++ {

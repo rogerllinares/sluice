@@ -41,9 +41,7 @@ func TestShutdownDrainsInFlightJob(t *testing.T) {
 	}
 
 	pool := worker.New(q, handler, worker.Config{NumWorkers: 2})
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	pool.Start(ctx)
 	if err := q.Enqueue(ctx, queue.Job{ID: "in-flight"}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -102,9 +100,7 @@ func TestShutdownStopsPullingNewJobs(t *testing.T) {
 	}
 
 	pool := worker.New(q, handler, worker.Config{NumWorkers: 2})
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	pool.Start(ctx)
 
 	sctx, scancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer scancel()
@@ -146,9 +142,7 @@ func TestShutdownReturnsWithinCeilingWhenJobHangs(t *testing.T) {
 	}
 
 	pool := worker.New(q, handler, worker.Config{NumWorkers: 1})
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	pool.Start(ctx)
 	if err := q.Enqueue(ctx, queue.Job{ID: "hangs"}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -195,9 +189,7 @@ func TestShutdownIsIdempotent(t *testing.T) {
 
 	q := queue.NewMemory(4)
 	pool := worker.New(q, func(context.Context, queue.Job) error { return nil }, worker.Config{NumWorkers: 2})
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	pool.Start(ctx)
 
 	sctx, scancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer scancel()
@@ -229,9 +221,7 @@ func TestStopAbortsImmediately(t *testing.T) {
 	}
 
 	pool := worker.New(q, handler, worker.Config{NumWorkers: 1})
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	pool.Start(ctx)
 	if err := q.Enqueue(ctx, queue.Job{ID: "running"}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}

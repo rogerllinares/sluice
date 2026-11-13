@@ -57,9 +57,7 @@ func TestPoolLogsAckAndNackErrors(t *testing.T) {
 	}
 
 	pool := worker.New(q, handler, worker.Config{NumWorkers: 1, Logger: logger})
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	pool.Start(ctx)
 	for _, id := range []string{"good", "bad"} {
 		if err := q.Enqueue(ctx, queue.Job{ID: id}); err != nil {
 			t.Fatalf("Enqueue %s: %v", id, err)
