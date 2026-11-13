@@ -27,7 +27,7 @@ const (
 // of concurrent workers contend on the table without ever reserving the same
 // row. A visibility timeout makes a crashed worker's in-flight job visible
 // again, which is what gives at-least-once delivery. The durable attempts
-// column is the single authoritative retry counter (F5).
+// column is the single authoritative retry counter.
 type Postgres struct {
 	pool              *pgxpool.Pool
 	visibilityTimeout time.Duration
@@ -108,9 +108,10 @@ func pgPayload(b []byte) []byte {
 	return b
 }
 
-// Enqueue inserts a job in the 'queued' state. Because this is a plain INSERT
-// in the caller's transaction scope, a job can be enqueued atomically with the
-// business data it concerns (transactional enqueue, no outbox needed).
+// Enqueue inserts a job in the 'queued' state. It runs on the pool in its own
+// implicit transaction, so it is NOT atomic with the caller's business writes;
+// enqueueing inside a caller's transaction (no outbox) would need a pgx.Tx
+// variant, which does not exist yet.
 //
 // When the job carries an IdempotencyKey, ON CONFLICT DO NOTHING against the
 // partial unique index makes a duplicate enqueue a silent no-op — an
@@ -254,7 +255,7 @@ func (p *Postgres) Dequeue(ctx context.Context) (Job, error) {
 // This is also the guarantee boundary of at-least-once delivery — if the lease
 // expired and another worker re-reserved this job, this Ack still marks it done,
 // so a duplicate effect is possible. Handlers must be idempotent (idempotency
-// key, added in F5) to turn at-least-once delivery into exactly-once *effects*.
+// key) to turn at-least-once delivery into exactly-once *effects*.
 func (p *Postgres) Ack(ctx context.Context, job Job) error {
 	if _, err := p.pool.Exec(ctx,
 		`UPDATE jobs SET status = 'done' WHERE id = $1`, job.ID); err != nil {
@@ -264,7 +265,7 @@ func (p *Postgres) Ack(ctx context.Context, job Job) error {
 }
 
 // Nack reports a failed delivery and decides the job's fate from its
-// authoritative attempts count (F5 — the single retry-accounting site). At or
+// authoritative attempts count (the single retry-accounting site). At or
 // past maxAttempts the row moves to status='dead' (the DLQ — queryable via
 // DeadLettered, never redelivered). Otherwise it returns to 'queued' with
 // available_at pushed into the future by an exponential-backoff-with-jitter

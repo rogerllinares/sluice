@@ -12,7 +12,7 @@ import (
 	"github.com/rogerllinares/sluice/internal/queue"
 )
 
-// server_test.go specifies the HTTP producer edge (F4): the enqueue endpoint
+// server_test.go specifies the HTTP producer edge: the enqueue endpoint
 // where load shedding becomes visible. The handler decodes a job from the
 // request body, calls the non-blocking Submit, and maps a full queue to
 // HTTP 429 + Retry-After instead of blocking. Success is 202 Accepted; a
@@ -92,7 +92,7 @@ func TestEnqueueHandlerRejectsBadBody(t *testing.T) {
 }
 
 // TestEnqueueHandlerRejectsEmptyID pins that an empty job ID is a client error
-// (400), not a silent 202. F5 builds idempotency on the ID, so an empty ID must
+// (400), not a silent 202. Idempotency is built on the ID, so an empty ID must
 // not slip onto the queue.
 func TestEnqueueHandlerRejectsEmptyID(t *testing.T) {
 	q := queue.NewMemory(4)

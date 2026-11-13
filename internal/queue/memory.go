@@ -8,8 +8,8 @@ import (
 
 // Memory is the in-memory queue backend: a bounded buffered channel sized to a
 // fixed depth. It is the simplest Queue implementation and the seam the durable
-// backends (Postgres, Redis) and the worker pool are validated against. F5 adds
-// the reliability semantics it shares with the durable backend: idempotent
+// backends (Postgres, Redis) and the worker pool are validated against. It has
+// the same reliability semantics as the durable backend: idempotent
 // enqueue (dedupe on key), bounded retries with exponential backoff, and a
 // dead-letter list for jobs past MaxAttempts.
 //
@@ -24,8 +24,9 @@ type Memory struct {
 	maxBackoff  time.Duration
 
 	mu       sync.Mutex
-	seenKeys map[string]struct{} // idempotency keys already enqueued
-	dead     []Job               // dead-lettered jobs (past MaxAttempts)
+	seenKeys map[string]struct{}      // idempotency keys already enqueued
+	inFlight map[string]chan struct{} // keys whose first enqueue is still sending; closed when it settles
+	dead     []Job                    // dead-lettered jobs (past MaxAttempts)
 
 	// pendingRetries counts in-flight backoff timers, and retriesIdle is
 	// closed whenever that count is zero (and replaced when it leaves zero).
@@ -53,8 +54,10 @@ func WithMemoryBackoff(base, max time.Duration) MemoryOption {
 	return func(m *Memory) { m.baseBackoff, m.maxBackoff = base, max }
 }
 
-// NewMemory returns a Memory whose buffer holds at most depth jobs.
+// NewMemory returns a Memory whose buffer holds at most depth jobs. A depth
+// below 1 is clamped to 1: an unbuffered channel would shed every Submit.
 func NewMemory(depth int, opts ...MemoryOption) *Memory {
+	depth = max(depth, 1)
 	idle := make(chan struct{})
 	close(idle) // no retries pending yet: born idle
 	m := &Memory{
@@ -63,6 +66,7 @@ func NewMemory(depth int, opts ...MemoryOption) *Memory {
 		baseBackoff: defaultBaseBackoff,
 		maxBackoff:  defaultMaxBackoff,
 		seenKeys:    make(map[string]struct{}),
+		inFlight:    make(map[string]chan struct{}),
 		retriesIdle: idle,
 	}
 	for _, opt := range opts {
@@ -72,43 +76,67 @@ func NewMemory(depth int, opts ...MemoryOption) *Memory {
 }
 
 // Enqueue adds a job, blocking until a buffer slot is free or ctx is done. If
-// the job carries an IdempotencyKey already seen, the enqueue is a no-op — this
-// is the dedupe that turns an at-least-once producer into exactly-once effects.
+// the job carries an IdempotencyKey already enqueued, the enqueue is a no-op —
+// this is the dedupe that turns an at-least-once producer into exactly-once
+// effects. A duplicate that arrives while the first enqueue of its key is
+// still blocked waits for that outcome instead of being told "enqueued" early.
 func (m *Memory) Enqueue(ctx context.Context, job Job) error {
-	if m.duplicate(job.IdempotencyKey) {
-		return nil
+	for {
+		dup, wait := m.claim(job.IdempotencyKey)
+		if dup {
+			return nil
+		}
+		if wait == nil {
+			break
+		}
+		select {
+		case <-wait: // the first caller settled: enqueued (dup next loop) or failed (we claim)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	select {
 	case m.jobs <- job:
+		m.settle(job.IdempotencyKey, true)
 		return nil
 	case <-ctx.Done():
-		m.forget(job.IdempotencyKey) // enqueue failed: let a retry try again
+		m.settle(job.IdempotencyKey, false) // enqueue failed: let a retry try again
 		return ctx.Err()
 	}
 }
 
-// duplicate records a non-empty key and reports whether it was already present.
-func (m *Memory) duplicate(key string) bool {
+// claim reports whether key was already enqueued (dup). Otherwise, if another
+// caller is still sending the same key, it returns that caller's settle channel
+// to wait on; else it takes the key in flight for this caller (wait == nil).
+// An empty key never dedupes.
+func (m *Memory) claim(key string) (dup bool, wait <-chan struct{}) {
 	if key == "" {
-		return false
+		return false, nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.seenKeys[key]; ok {
-		return true
+		return true, nil
 	}
-	m.seenKeys[key] = struct{}{}
-	return false
+	if ch, ok := m.inFlight[key]; ok {
+		return false, ch
+	}
+	m.inFlight[key] = make(chan struct{})
+	return false, nil
 }
 
-// forget drops a key so a failed enqueue can be retried.
-func (m *Memory) forget(key string) {
+// settle ends a claim: an enqueued key becomes seen, a failed one is released.
+func (m *Memory) settle(key string, enqueued bool) {
 	if key == "" {
 		return
 	}
 	m.mu.Lock()
-	delete(m.seenKeys, key)
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	if enqueued {
+		m.seenKeys[key] = struct{}{}
+	}
+	close(m.inFlight[key])
+	delete(m.inFlight, key)
 }
 
 // Dequeue returns the next job in FIFO order, blocking until one is available or
@@ -135,7 +163,8 @@ func (m *Memory) Ack(_ context.Context, _ Job) error {
 // redelivered); otherwise it is redelivered after a backoff delay. The
 // redelivery is scheduled on a timer so the buffer slot is not held during the
 // wait; the re-enqueued copy carries the current Attempts so the count keeps
-// climbing across retries.
+// climbing across retries. A full buffer at retry time delays the retry; it
+// never dead-letters a job that has attempts left.
 func (m *Memory) Nack(_ context.Context, job Job) error {
 	if job.Attempts >= m.maxAttempts {
 		m.mu.Lock()
@@ -149,21 +178,23 @@ func (m *Memory) Nack(_ context.Context, job Job) error {
 	// lets WaitRetries observe when every scheduled redelivery has landed,
 	// which keeps the redelivery race out of the goleak/shutdown path.
 	m.retryScheduled()
+	m.redeliver(job, delay)
+	return nil
+}
+
+// redeliver re-enqueues job after delay. If the buffer is still full when the
+// timer fires, it waits another delay and tries again instead of dead-lettering
+// a job that has attempts left; the retry stays pending (WaitRetries keeps
+// waiting) until it lands, so a shutdown ceiling still bounds the wait.
+func (m *Memory) redeliver(job Job, delay time.Duration) {
 	time.AfterFunc(delay, func() {
-		defer m.retryFinished()
 		select {
 		case m.jobs <- job:
+			m.retryFinished()
 		default:
-			// Buffer full at retry time: drop into the dead-letter list rather
-			// than block a timer goroutine. At-least-once is preserved up to
-			// capacity; documented as a known in-memory limitation (Postgres,
-			// the durable backend, has no such bound).
-			m.mu.Lock()
-			m.dead = append(m.dead, job)
-			m.mu.Unlock()
+			m.redeliver(job, delay)
 		}
 	})
-	return nil
 }
 
 // retryScheduled registers a pending backoff timer. When the count leaves
@@ -189,7 +220,7 @@ func (m *Memory) retryFinished() {
 }
 
 // WaitRetries blocks until every scheduled backoff redelivery has fired
-// (either re-enqueued or, if the buffer was full, dead-lettered), or until ctx
+// (re-enqueued; a full buffer only delays it), or until ctx
 // is done — so a pending long backoff can never pin a shutdown past its
 // ceiling. Tests use it to drain pending retries deterministically instead of
 // sleeping; the composition root uses it as the final drain step.
@@ -218,20 +249,27 @@ func (m *Memory) DeadLettered() []Job {
 
 // Submit is the non-blocking enqueue path: it adds a job if a slot is free,
 // otherwise sheds load by returning ErrQueueFull instead of blocking. It honours
-// the same idempotency dedupe as Enqueue. The send itself never blocks, so ctx
-// only gates entry: a cancelled request is not enqueued.
+// the same idempotency dedupe as Enqueue; while another caller is still sending
+// the same key, Submit cannot know the outcome without blocking, so it sheds
+// (ErrQueueFull = retry later). ctx only gates entry: a cancelled request is
+// not enqueued.
 func (m *Memory) Submit(ctx context.Context, job Job) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if m.duplicate(job.IdempotencyKey) {
+	dup, wait := m.claim(job.IdempotencyKey)
+	if dup {
 		return nil
+	}
+	if wait != nil {
+		return ErrQueueFull
 	}
 	select {
 	case m.jobs <- job:
+		m.settle(job.IdempotencyKey, true)
 		return nil
 	default:
-		m.forget(job.IdempotencyKey) // shed: do not claim the key was enqueued
+		m.settle(job.IdempotencyKey, false) // shed: do not claim the key was enqueued
 		return ErrQueueFull
 	}
 }

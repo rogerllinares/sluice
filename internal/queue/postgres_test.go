@@ -13,7 +13,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
-// postgres_test.go specifies the durable backend (F2). The integration tests
+// postgres_test.go specifies the durable backend. The integration tests
 // run against a real Postgres spun up per-suite via testcontainers, so they
 // require a running Docker daemon. The locking guarantee under test is
 // SELECT ... FOR UPDATE SKIP LOCKED: concurrent workers never reserve the same

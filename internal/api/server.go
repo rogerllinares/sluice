@@ -67,7 +67,7 @@ func (s *Server) EnqueueHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.ID == "" {
-		// ID is the idempotency seam F5 builds on; never enqueue an empty one.
+		// ID is the idempotency seam; never enqueue an empty one.
 		http.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}

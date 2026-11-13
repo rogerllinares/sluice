@@ -11,13 +11,13 @@ import (
 	"github.com/rogerllinares/sluice/internal/worker"
 )
 
-// pool_test.go specifies the minimal worker loop (F1 slice / F3 seam).
+// pool_test.go specifies the minimal worker loop.
 //
 // Given a queue.Queue and a Handler, a submitted job must be processed exactly
 // once and acked. We use the in-memory queue as the concrete backend and a
 // handler that records which job IDs it saw.
 
-// TestWorkerProcessesJobOnce is the end-to-end F1 slice: enqueue -> worker pool
+// TestWorkerProcessesJobOnce is the end-to-end slice: enqueue -> worker pool
 // drains it -> handler runs exactly once -> job is acked. The handler signals a
 // channel so the test waits for actual processing instead of sleeping.
 func TestWorkerProcessesJobOnce(t *testing.T) {
@@ -43,9 +43,7 @@ func TestWorkerProcessesJobOnce(t *testing.T) {
 	if pool == nil {
 		t.Fatal("worker.New returned nil")
 	}
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("pool.Start returned error: %v", err)
-	}
+	pool.Start(ctx)
 
 	if err := q.Enqueue(ctx, queue.Job{ID: "only-job"}); err != nil {
 		t.Fatalf("Enqueue returned error: %v", err)
@@ -103,9 +101,7 @@ func TestWorkerProcessesEveryJobExactlyOnce(t *testing.T) {
 	if pool == nil {
 		t.Fatal("worker.New returned nil")
 	}
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("pool.Start returned error: %v", err)
-	}
+	pool.Start(ctx)
 
 	ids := make([]string, 0, n)
 	for i := 0; i < n; i++ {

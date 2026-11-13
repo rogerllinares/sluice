@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// backoff_test.go specifies the shared retry-backoff schedule (F5). The same
+// backoff_test.go specifies the shared retry-backoff schedule. The same
 // function is used by both backends so the retry timing is single-sourced.
 
 // TestBackoffGrowsExponentially pins that the base delay (before jitter) doubles

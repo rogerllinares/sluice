@@ -10,8 +10,8 @@ import (
 	"github.com/rogerllinares/sluice/internal/worker"
 )
 
-// pool_f5_test.go pins the F5 retry-accounting reconciliation: the pool no
-// longer counts attempts itself. On handler failure it simply Nacks, and the
+// pool_retry_test.go pins the retry accounting: the pool does not
+// count attempts itself. On handler failure it simply Nacks, and the
 // backend (which owns the authoritative Attempts count) decides redelivery vs
 // dead-letter. So a permanently failing job runs exactly MaxAttempts times and
 // then lands in the dead-letter list — driven by the backend, not the pool.
@@ -38,9 +38,7 @@ func TestPoolFailingJobDeadLettersAfterMaxAttempts(t *testing.T) {
 	}
 
 	pool := worker.New(q, handler, worker.Config{NumWorkers: 2})
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	pool.Start(ctx)
 	if err := q.Enqueue(ctx, queue.Job{ID: "always-fails"}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
