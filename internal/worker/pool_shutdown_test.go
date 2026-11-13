@@ -10,7 +10,7 @@ import (
 	"github.com/rogerllinares/sluice/internal/worker"
 )
 
-// pool_shutdown_test.go pins the F6 graceful-shutdown contract: Shutdown stops the
+// pool_shutdown_test.go pins the graceful-shutdown contract: Shutdown stops the
 // pool accepting new jobs, lets the in-flight job finish within a hard ceiling,
 // then returns; a job that hangs past the ceiling cannot pin the process (force
 // path); and a full start -> drain -> stop cycle leaks no goroutines (the

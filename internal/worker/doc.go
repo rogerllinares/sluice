@@ -6,12 +6,9 @@
 // of workers, depth is how many jobs can wait. Each job runs under a context so
 // shutdown cancels in-flight work; a per-job deferred recover keeps one bad job
 // from shrinking the pool. Shutdown drains in-flight work within a hard ceiling
-// with no goroutine leaks (see ROADMAP F3/F6).
+// with no goroutine leaks.
 //
-// F3 added the WaitGroup-tracked drain, the NumCPU default, and a per-job
-// recover (a panicking job is contained, not a dead worker). F5 reconciled the
-// retry accounting: the pool no longer counts attempts. On failure it just
-// Nacks, and the backend — which owns the single authoritative Attempts count —
-// decides redelivery (with backoff) vs dead-letter. Graceful Shutdown stays
-// TODO until F6. Behaviour is built test-first.
+// The pool does not count attempts. On failure it just Nacks, and the backend —
+// which owns the single authoritative Attempts count — decides redelivery (with
+// backoff) vs dead-letter.
 package worker

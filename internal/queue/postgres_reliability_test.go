@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// postgres_reliability_test.go specifies the F5 reliability semantics on the durable
+// postgres_reliability_test.go specifies the reliability semantics on the durable
 // backend: idempotent enqueue (UNIQUE idempotency key), bounded retries with
 // backoff (available_at delay), and the dead-letter path (status='dead'). These
 // are integration tests against a real Postgres via testcontainers, so they run

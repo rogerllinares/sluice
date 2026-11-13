@@ -9,13 +9,13 @@ import (
 	"github.com/rogerllinares/sluice/internal/queue"
 )
 
-// memory_test.go specifies the in-memory bounded-buffered-channel queue (F1).
+// memory_test.go specifies the in-memory bounded-buffered-channel queue.
 //
 // Type under test: queue.Memory, constructed via queue.NewMemory(depth int).
 // It implements the queue.Queue interface (Enqueue / Dequeue / Ack / Nack) and
 // additionally exposes a non-blocking Submit that sheds load with ErrQueueFull
 // when the bounded buffer is full — the seam every later backend (Postgres,
-// Redis) and the F4 backpressure work build on.
+// Redis) and the HTTP backpressure edge build on.
 
 // TestMemoryImplementsQueue is a compile-time assertion that *Memory satisfies
 // the Queue interface. If the interface and the implementation drift apart this
@@ -90,7 +90,7 @@ func TestMemoryFIFOOrder(t *testing.T) {
 
 // TestMemorySubmitShedsWhenFull is the backpressure seam. With QueueDepth=N the
 // non-blocking Submit accepts exactly N jobs, then returns ErrQueueFull instead
-// of blocking. F4 maps ErrQueueFull -> HTTP 429; here we only assert the error
+// of blocking. The API maps ErrQueueFull -> HTTP 429; here we only assert the error
 // type exists and is returned the moment the bounded buffer is full.
 func TestMemorySubmitShedsWhenFull(t *testing.T) {
 	const depth = 2

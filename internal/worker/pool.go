@@ -26,8 +26,8 @@ type Config struct {
 
 // Pool is a fixed-size set of workers draining a queue.Queue.
 //
-// The WaitGroup is wired in F3 (Start adds, work signals on exit, Wait blocks).
-// F6 adds graceful shutdown via two derived contexts created in Start:
+// The WaitGroup tracks the workers (Start adds, work signals on exit, Wait
+// blocks). Graceful shutdown uses two derived contexts created in Start:
 //
 //   - dequeueCtx gates pulling NEW jobs. Shutdown cancels it so idle workers
 //     (blocked in Dequeue) exit at once and busy workers stop pulling once their
@@ -63,8 +63,6 @@ type Pool struct {
 
 // Handler processes a single job. Returning an error triggers Nack
 // (retry/backoff or DLQ); nil triggers Ack.
-//
-// TODO(F3/F5): finalise the handler signature against the first failing tests.
 type Handler func(ctx context.Context, job queue.Job) error
 
 // New constructs a Pool over the given queue and handler. A NumWorkers of 0 (or
@@ -113,7 +111,7 @@ func (p *Pool) cancels() (stopDequeue, abort context.CancelFunc) {
 
 // Wait blocks until every worker goroutine has returned (after ctx is
 // cancelled). It lets callers — and the zero-leak tests — confirm the pool
-// drained instead of leaking goroutines. F6 builds graceful Shutdown on top.
+// drained instead of leaking goroutines. Shutdown builds the graceful drain on top.
 func (p *Pool) Wait() { p.wg.Wait() }
 
 // work is a single worker's drain loop: Dequeue -> handle -> Ack/Nack. It pulls

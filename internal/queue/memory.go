@@ -8,8 +8,8 @@ import (
 
 // Memory is the in-memory queue backend: a bounded buffered channel sized to a
 // fixed depth. It is the simplest Queue implementation and the seam the durable
-// backends (Postgres, Redis) and the worker pool are validated against. F5 adds
-// the reliability semantics it shares with the durable backend: idempotent
+// backends (Postgres, Redis) and the worker pool are validated against. It has
+// the same reliability semantics as the durable backend: idempotent
 // enqueue (dedupe on key), bounded retries with exponential backoff, and a
 // dead-letter list for jobs past MaxAttempts.
 //
